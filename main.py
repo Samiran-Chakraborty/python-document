@@ -14,7 +14,7 @@ def generate():
     return {
         "status": "SUCCESS",
         "message": "Document generated successfully",
-        "file_url": "http://127.0.0.1:8000/api/v1/deliverables/download"
+        "file_url": "https://python-document-new-2.onrender.com/api/v1/deliverables/download"
     }
 
 @app.get("/api/v1/deliverables/download")
