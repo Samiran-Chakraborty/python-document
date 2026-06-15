@@ -1,14 +1,13 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+from fastapi.responses import FileResponse
 
 app = FastAPI()
-
 
 class GenerateRequest(BaseModel):
     project_id: int
     project_plan_line_id: int
     template_id: str
-
 
 @app.get("/")
 def home():
@@ -17,13 +16,13 @@ def home():
         "message": "Document generation API is running"
     }
 
-
 @app.post("/api/v1/deliverables/generate")
 def generate_deliverable(req: GenerateRequest):
-    return {
-        "status": "SUCCESS",
-        "message": "API is working",
-        "project_id": req.project_id,
-        "project_plan_line_id": req.project_plan_line_id,
-        "template_id": req.template_id
-    }
+    
+    file_path = "sample.pdf"  # your generated file path
+
+    return FileResponse(
+        path=file_path,
+        filename="deliverable.pdf",
+        media_type="application/pdf"
+    )
