@@ -1,4 +1,7 @@
-flask 
 fastapi
 uvicorn
 pydantic
+reportlab
+requests
+python-docx
+python-multipart
