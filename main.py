@@ -3,6 +3,9 @@ from pydantic import BaseModel
 from fastapi.responses import FileResponse
 from reportlab.pdfgen import canvas
 from pathlib import Path
+from typing import Optional
+from uuid import uuid4
+from datetime import datetime
 import os
 import base64
 import binascii
@@ -36,7 +39,7 @@ class GenerateRequest(BaseModel):
     project_plan_line_id: int
     template_id: str
     template_content: str
-    template_file_name: str | None = None
+    template_file_name: Optional[str] = None
 
 
 # ------------------------------------------------------------------------------
@@ -47,6 +50,7 @@ def extract_file_content(file_path: Path) -> str:
     """
     Extract readable content from supported file types.
     """
+
     suffix = file_path.suffix.lower()
 
     # TXT / JSON / XML / HTML / CSV
@@ -57,7 +61,20 @@ def extract_file_content(file_path: Path) -> str:
     # DOCX
     elif suffix == ".docx":
         doc = Document(str(file_path))
-        lines = [p.text for p in doc.paragraphs if p.text.strip()]
+        lines = []
+
+        # paragraphs
+        for p in doc.paragraphs:
+            if p.text.strip():
+                lines.append(p.text.strip())
+
+        # tables
+        for table in doc.tables:
+            for row in table.rows:
+                row_text = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                if row_text:
+                    lines.append(" | ".join(row_text))
+
         return "\n".join(lines)
 
     # XLSX
@@ -115,9 +132,14 @@ def generate(req: GenerateRequest):
         }
 
     try:
-        # Step 2: save original template file
-        original_file_name = req.template_file_name or f"template_{req.project_plan_line_id}_{req.template_id}.bin"
-        original_file_name = Path(original_file_name).name
+        # Step 2: create unique names for every run
+        unique_id = f"{req.project_plan_line_id}_{req.template_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{uuid4().hex[:8]}"
+
+        input_name = req.template_file_name or f"template_{unique_id}.bin"
+        input_name = Path(input_name).name
+        suffix = Path(input_name).suffix or ".bin"
+
+        original_file_name = f"template_{unique_id}{suffix}"
         original_file_path = FILES_DIR / original_file_name
 
         with open(original_file_path, "wb") as f:
@@ -127,14 +149,14 @@ def generate(req: GenerateRequest):
         extracted_content = extract_file_content(original_file_path)
 
         # Step 4: save extracted text as .txt file
-        text_file_name = f"content_{req.project_plan_line_id}_{req.template_id}.txt"
+        text_file_name = f"content_{unique_id}.txt"
         text_file_path = FILES_DIR / text_file_name
 
         with open(text_file_path, "w", encoding="utf-8") as f:
             f.write(extracted_content)
 
         # Step 5: create preview PDF with extracted text
-        preview_file_name = f"preview_{req.project_plan_line_id}_{req.template_id}.pdf"
+        preview_file_name = f"preview_{unique_id}.pdf"
         preview_file_path = FILES_DIR / preview_file_name
 
         c = canvas.Canvas(str(preview_file_path))
@@ -153,7 +175,7 @@ def generate(req: GenerateRequest):
         y -= 30
 
         lines = extracted_content.splitlines()
-        for line in lines[:40]:   # first 40 lines only for preview
+        for line in lines[:40]:
             c.drawString(50, y, line[:110])
             y -= 18
             if y < 50:
@@ -162,7 +184,6 @@ def generate(req: GenerateRequest):
 
         c.save()
 
-        # Step 6: return response
         return {
             "status": "SUCCESS",
             "message": "Template content extracted successfully",
@@ -173,7 +194,7 @@ def generate(req: GenerateRequest):
             "original_file_link": f"{BASE_URL}/api/v1/deliverables/download/{original_file_name}",
             "text_file_name": text_file_name,
             "text_file_link": f"{BASE_URL}/api/v1/deliverables/download/{text_file_name}",
-            "extracted_content": extracted_content[:4000]  # return first 4000 chars
+            "extracted_content": extracted_content[:4000]
         }
 
     except Exception as e:
