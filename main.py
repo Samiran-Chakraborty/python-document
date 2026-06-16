@@ -1,28 +1,53 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
-import os
 from reportlab.pdfgen import canvas
+from pathlib import Path
+import os
 
 app = FastAPI()
 
+# ------------------------------------------------------------------------------
+# Configuration
+# ------------------------------------------------------------------------------
 
-# This class accepts JSON request from APEX
+# Base URL used to build the download link returned to APEX
+BASE_URL = os.getenv(
+    "BASE_URL",
+    "https://python-document-new-2.onrender.com"
+)
+
+# Directory to store generated PDF files
+FILES_DIR = Path(os.getcwd()) / "generated_files"
+FILES_DIR.mkdir(parents=True, exist_ok=True)
+
+# ------------------------------------------------------------------------------
+# Request model
+# ------------------------------------------------------------------------------
+
 class GenerateRequest(BaseModel):
     project_id: int
     project_plan_line_id: int
     template_id: str
 
 
+# ------------------------------------------------------------------------------
+# Generate PDF endpoint
+# ------------------------------------------------------------------------------
+
 @app.post("/api/v1/deliverables/generate")
 def generate(req: GenerateRequest):
+    """
+    Generates a PDF file and returns a download link.
+    """
 
-    # Create unique file name using project_plan_line_id + template_id
+    # Build a unique file name
     file_name = f"output_{req.project_plan_line_id}_{req.template_id}.pdf"
-    file_path = os.path.join(os.getcwd(), file_name)
+    file_path = FILES_DIR / file_name
 
     # Create PDF dynamically
-    c = canvas.Canvas(file_path)
+    c = canvas.Canvas(str(file_path))
+    c.setTitle("Dynamic Document")
     c.drawString(100, 750, "Dynamic Document")
     c.drawString(100, 720, f"Project ID: {req.project_id}")
     c.drawString(100, 690, f"Project Plan Line ID: {req.project_plan_line_id}")
@@ -30,22 +55,41 @@ def generate(req: GenerateRequest):
     c.drawString(100, 630, "Generated at runtime")
     c.save()
 
-    # Return response to APEX
+    # Return JSON response for APEX
     return {
         "status": "SUCCESS",
         "message": "Document generated successfully",
         "type": "PDF",
-        "link": f"https://python-document-new-2.onrender.com/api/v1/deliverables/download/{file_name}"
+        "file_name": file_name,
+        "link": f"{BASE_URL}/api/v1/deliverables/download/{file_name}"
     }
 
 
+# ------------------------------------------------------------------------------
+# Download PDF endpoint
+# ------------------------------------------------------------------------------
+
 @app.get("/api/v1/deliverables/download/{file_name}")
 def download(file_name: str):
+    """
+    Downloads the generated PDF as an attachment.
+    """
 
-    file_path = os.path.join(os.getcwd(), file_name)
+    # Prevent path traversal by only taking the file name
+    safe_file_name = Path(file_name).name
+    file_path = FILES_DIR / safe_file_name
 
+    # Check if file exists
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Force browser download using Content-Disposition: attachment
     return FileResponse(
-        path=file_path,
-        filename=file_name,
-        media_type="application/pdf"
+        path=str(file_path),
+        media_type="application/pdf",
+        filename=safe_file_name,
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_file_name}"',
+            "Cache-Control": "no-store"
+        }
     )
