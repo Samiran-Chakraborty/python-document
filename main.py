@@ -8,6 +8,11 @@ import base64
 import binascii
 import mimetypes
 
+# For extracting content
+from docx import Document
+from openpyxl import load_workbook
+from PyPDF2 import PdfReader
+
 app = FastAPI()
 
 # ------------------------------------------------------------------------------
@@ -35,6 +40,57 @@ class GenerateRequest(BaseModel):
 
 
 # ------------------------------------------------------------------------------
+# Content extraction helper
+# ------------------------------------------------------------------------------
+
+def extract_file_content(file_path: Path) -> str:
+    """
+    Extract readable content from supported file types.
+    """
+    suffix = file_path.suffix.lower()
+
+    # TXT / JSON / XML / HTML / CSV
+    if suffix in [".txt", ".json", ".xml", ".html", ".csv"]:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()
+
+    # DOCX
+    elif suffix == ".docx":
+        doc = Document(str(file_path))
+        lines = [p.text for p in doc.paragraphs if p.text.strip()]
+        return "\n".join(lines)
+
+    # XLSX
+    elif suffix == ".xlsx":
+        wb = load_workbook(str(file_path), data_only=True)
+        all_text = []
+
+        for sheet in wb.worksheets:
+            all_text.append(f"--- Sheet: {sheet.title} ---")
+            for row in sheet.iter_rows(values_only=True):
+                row_values = [str(cell) for cell in row if cell is not None]
+                if row_values:
+                    all_text.append(" | ".join(row_values))
+
+        return "\n".join(all_text)
+
+    # PDF
+    elif suffix == ".pdf":
+        reader = PdfReader(str(file_path))
+        pages_text = []
+
+        for i, page in enumerate(reader.pages, start=1):
+            text = page.extract_text() or ""
+            pages_text.append(f"--- Page {i} ---\n{text}")
+
+        return "\n".join(pages_text)
+
+    # Unsupported / binary
+    else:
+        return "Unsupported file type for direct text extraction."
+
+
+# ------------------------------------------------------------------------------
 # Generate endpoint
 # ------------------------------------------------------------------------------
 
@@ -43,12 +99,13 @@ def generate(req: GenerateRequest):
     """
     Receives base64 template content from APEX,
     saves original file,
-    creates a PDF preview,
-    returns downloadable/displayable links.
+    extracts readable content,
+    creates preview PDF,
+    returns extracted content + links.
     """
 
     try:
-        # Step 1: decode base64 content received from APEX
+        # Step 1: decode base64
         decoded_bytes = base64.b64decode(req.template_content)
 
     except binascii.Error:
@@ -58,16 +115,25 @@ def generate(req: GenerateRequest):
         }
 
     try:
-        # Step 2: decide original file name
+        # Step 2: save original template file
         original_file_name = req.template_file_name or f"template_{req.project_plan_line_id}_{req.template_id}.bin"
-        original_file_name = Path(original_file_name).name  # safety
+        original_file_name = Path(original_file_name).name
         original_file_path = FILES_DIR / original_file_name
 
-        # Step 3: save original file from cloud content
         with open(original_file_path, "wb") as f:
             f.write(decoded_bytes)
 
-        # Step 4: create preview PDF
+        # Step 3: extract inside content
+        extracted_content = extract_file_content(original_file_path)
+
+        # Step 4: save extracted text as .txt file
+        text_file_name = f"content_{req.project_plan_line_id}_{req.template_id}.txt"
+        text_file_path = FILES_DIR / text_file_name
+
+        with open(text_file_path, "w", encoding="utf-8") as f:
+            f.write(extracted_content)
+
+        # Step 5: create preview PDF with extracted text
         preview_file_name = f"preview_{req.project_plan_line_id}_{req.template_id}.pdf"
         preview_file_path = FILES_DIR / preview_file_name
 
@@ -75,7 +141,7 @@ def generate(req: GenerateRequest):
         c.setTitle("Template Preview")
 
         y = 800
-        c.drawString(50, y, "Template Preview / Download Summary")
+        c.drawString(50, y, "Template Extracted Content Preview")
         y -= 30
         c.drawString(50, y, f"Project ID: {req.project_id}")
         y -= 20
@@ -86,37 +152,28 @@ def generate(req: GenerateRequest):
         c.drawString(50, y, f"Original File Name: {original_file_name}")
         y -= 30
 
-        # Step 5: if decoded file is text, show preview lines
-        # If binary (docx/xlsx/etc.), show summary only
-        try:
-            decoded_text = decoded_bytes.decode("utf-8", errors="strict")
-            c.drawString(50, y, "Template Content Preview:")
-            y -= 20
-
-            lines = decoded_text.splitlines()
-            for line in lines[:20]:
-                c.drawString(50, y, line[:110])  # avoid very long lines
-                y -= 18
-                if y < 50:
-                    c.showPage()
-                    y = 800
-        except UnicodeDecodeError:
-            c.drawString(50, y, "Template file is binary (for example DOCX/XLSX/PDF).")
-            y -= 20
-            c.drawString(50, y, "Content cannot be directly displayed as plain text.")
-            y -= 20
-            c.drawString(50, y, "Use the original file download link to open the actual file.")
+        lines = extracted_content.splitlines()
+        for line in lines[:40]:   # first 40 lines only for preview
+            c.drawString(50, y, line[:110])
+            y -= 18
+            if y < 50:
+                c.showPage()
+                y = 800
 
         c.save()
 
+        # Step 6: return response
         return {
             "status": "SUCCESS",
-            "message": "Template content received and files created successfully",
+            "message": "Template content extracted successfully",
             "type": "PDF",
             "file_name": preview_file_name,
             "link": f"{BASE_URL}/api/v1/deliverables/download/{preview_file_name}",
             "original_file_name": original_file_name,
-            "original_file_link": f"{BASE_URL}/api/v1/deliverables/download/{original_file_name}"
+            "original_file_link": f"{BASE_URL}/api/v1/deliverables/download/{original_file_name}",
+            "text_file_name": text_file_name,
+            "text_file_link": f"{BASE_URL}/api/v1/deliverables/download/{text_file_name}",
+            "extracted_content": extracted_content[:4000]  # return first 4000 chars
         }
 
     except Exception as e:
